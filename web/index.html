@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>grayworm how do you like my grayworm</title>
+
+  <style>
+    /* Make the whole browser window black. */
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: black;
+    }
+
+    /* Center the 16:9 scene in the browser window. */
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .scene {
+      position: relative;
+
+      /*
+       * Fit the 16:9 scene within the window without stretching.
+       * Any extra space around it remains black.
+       */
+      width: min(100vw, 177.7778vh);
+      aspect-ratio: 16 / 9;
+    }
+
+    .background {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #bg0 {
+      z-index: 0;
+    }
+
+    #bg1 {
+      z-index: 1;
+    }
+
+    /*
+     * Adjust these values after cropping your valve images.
+     * The percentages are relative to the 2560×1440 scene.
+     */
+    #valve {
+      position: absolute;
+      z-index: 2;
+
+      left: 50%;
+      top: 50%;
+      width: 38%;
+
+      /*
+       * Center the valve image on the left/top position.
+       * Remove this line if you want left/top to specify
+       * the top-left corner instead.
+       */
+      transform: translate(-50%, -50%);
+
+      height: auto;
+      cursor: pointer;
+    }
+
+    #valve:focus-visible {
+      outline: 2px solid white;
+      outline-offset: 4px;
+    }
+  </style>
+</head>
+
+<body>
+<main class="scene">
+  <img
+          id="bg0"
+          class="background"
+          src="/images/bg0.png"
+          alt=""
+  >
+
+  <img
+          id="bg1"
+          class="background"
+          src="/images/bg1.png"
+          alt=""
+  >
+
+  <img
+          id="valve"
+          src="/images/vclose.png"
+          alt="Toggle the ghost machine"
+          role="button"
+          tabindex="0"
+  >
+</main>
+
+<script>
+  const valve = document.querySelector('#valve');
+
+  // Keep these paths consistent with your actual filenames.
+  const valveImages = {
+    open: '/images/vopen.png',
+    close: '/images/vclose.png'
+  };
+
+  let toggling = false;
+
+  function displayState(state) {
+    if (!valveImages[state]) {
+      console.error('Unknown state:', state);
+      return;
+    }
+
+    valve.src = valveImages[state];
+    valve.alt = `my worm is ${state}. click to toggle.`;
+  }
+
+  async function refreshState() {
+    const response = await fetch('/api/state', {
+      cache: 'no-store'
+    });
+
+    if (!response.ok) {
+      throw new Error('could not read the current state');
+    }
+
+    const data = await response.json();
+    displayState(data.state);
+  }
+
+  async function toggleState() {
+    if (toggling) return;
+
+    toggling = true;
+
+    try {
+      const response = await fetch('/api/toggle', {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        throw new Error('could not toggle the state');
+      }
+
+      const data = await response.json();
+      displayState(data.state);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      toggling = false;
+    }
+  }
+
+  valve.addEventListener('click', toggleState);
+
+  // Allow keyboard users to activate the image too.
+  valve.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleState();
+    }
+  });
+
+  refreshState().catch(console.error);
+
+  // Pick up changes made from another browser.
+  setInterval(() => {
+    if (!toggling) {
+      refreshState().catch(console.error);
+    }
+  }, 3000);
+</script>
+</body>
+</html>
