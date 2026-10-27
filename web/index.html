@@ -27,7 +27,7 @@
       width: min(100vw, 177.7778vh);
       aspect-ratio: 16 / 9;
 
-      /* Clip rotating images to the edges of the scene. */
+      /* Keep rotating backgrounds inside the scene. */
       overflow: hidden;
     }
 
@@ -61,13 +61,9 @@
       z-index: 2;
     }
 
-    #bg3 {
-      z-index: 3;
-    }
-
     #valve {
       position: absolute;
-      z-index: 4;
+      z-index: 3;
 
       left: 50%;
       top: 50%;
@@ -165,18 +161,11 @@
           alt=""
   >
 
+  <!-- Only visible while the vault is open. -->
   <img
           id="bg2"
           class="background"
           src="/images/bg2.png"
-          alt=""
-  >
-
-  <!-- Hidden until the server reports that the vault is open. -->
-  <img
-          id="bg3"
-          class="background"
-          src="/images/bg3.png"
           alt=""
           hidden
   >
@@ -238,7 +227,7 @@
 
 <script>
   const valve = document.querySelector('#valve');
-  const bg3 = document.querySelector('#bg3');
+  const bg2 = document.querySelector('#bg2');
 
   const quizDialog = document.querySelector('#quiz-dialog');
   const quizForm = document.querySelector('#quiz-form');
@@ -321,8 +310,8 @@
     valve.src = valveImages[state];
     valve.alt = `my worm is ${state}. click to toggle.`;
 
-    // Only show bg3 while the vault is open.
-    bg3.hidden = state !== 'open';
+    // bg2 is visible only while the vault is open.
+    bg2.hidden = state !== 'open';
 
     if (state === 'close') {
       waitingForRiddle = false;
@@ -479,6 +468,7 @@
     }
   });
 
+  // Don't let Escape dismiss the quiz while the vault is open.
   quizDialog.addEventListener('cancel', event => {
     event.preventDefault();
   });
