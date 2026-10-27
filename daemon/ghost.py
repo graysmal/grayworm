@@ -13,10 +13,10 @@ import urllib.request
 from urllib.parse import quote, unquote
 
 
-STATE_INTERVAL = 5
-EFFECT_INTERVAL = 5
+STATE_INTERVAL = 3
+EFFECT_INTERVAL = 3
 
-# Ollama may need time to load the model and generate a filename.
+# Ollama may need time to load and generate a response.
 REQUEST_TIMEOUT = 100
 
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024
@@ -29,6 +29,11 @@ ALLOWED_MEDIA_EXTENSIONS = {
     '.png',
     '.jpg',
     '.jpeg'
+}
+
+VIDEO_EXTENSIONS = {
+    '.mkv',
+    '.mp4'
 }
 
 USER_AGENT = 'Grayworm/1.0'
@@ -95,6 +100,35 @@ def safe_filename(filename, allowed_extensions):
     return filename
 
 
+def open_video_in_dragon(file_path):
+    """Open a downloaded video in Dragon Player."""
+    if file_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return
+
+    try:
+        subprocess.Popen(
+            ['dragon', str(file_path)],
+            start_new_session=True
+        )
+
+        print(
+            f'Opened in Dragon Player: {file_path}',
+            flush=True
+        )
+
+    except FileNotFoundError:
+        print(
+            'Dragon Player was not found. Is it installed?',
+            flush=True
+        )
+
+    except OSError as error:
+        print(
+            f'Could not open Dragon Player: {error}',
+            flush=True
+        )
+
+
 def download_effect(server, effect):
     media_url = effect.get('url')
 
@@ -129,15 +163,21 @@ def download_effect(server, effect):
     )
 
     if filename is None:
-        print('Ignoring an invalid destination filename.', flush=True)
+        print(
+            'Ignoring an invalid destination filename.',
+            flush=True
+        )
         return False
 
-    # Make sure the saved extension matches the source file.
+    # The destination extension must match the source extension.
     if (
         Path(filename).suffix.lower()
         != Path(source_name).suffix.lower()
     ):
-        print('Source and destination extensions differ.', flush=True)
+        print(
+            'Source and destination extensions differ.',
+            flush=True
+        )
         return False
 
     desktop = get_desktop_directory()
@@ -181,10 +221,14 @@ def download_effect(server, effect):
                 content_length
                 and int(content_length) > MAX_DOWNLOAD_BYTES
             ):
-                print('Media file exceeds the size limit.', flush=True)
+                print(
+                    'Media file exceeds the size limit.',
+                    flush=True
+                )
                 return False
 
-            # Download to a temporary file first.
+            # Download to a temporary file first so incomplete downloads
+            # don't appear under their final names.
             with tempfile.NamedTemporaryFile(
                 dir=desktop,
                 prefix='.ghost-download-',
@@ -211,6 +255,7 @@ def download_effect(server, effect):
         # Create the final name without replacing an existing file.
         try:
             os.link(temporary_path, destination)
+
         except FileExistsError:
             print(
                 f'File already exists; leaving it alone: {destination}',
@@ -219,6 +264,10 @@ def download_effect(server, effect):
             return False
 
         print(f'Downloaded to: {destination}', flush=True)
+
+        # Opens MKV and MP4 files only.
+        open_video_in_dragon(destination)
+
         return True
 
     except (OSError, ValueError, urllib.error.URLError) as error:
@@ -258,11 +307,14 @@ def create_text_effect(effect):
     destination = desktop / filename
 
     try:
-        # "x" creates the file without overwriting an existing one.
+        # "x" creates a new file without overwriting an existing one.
         with destination.open('x', encoding='utf-8') as file:
             file.write(contents)
 
-        print(f'Created text file: {destination}', flush=True)
+        print(
+            f'Created text file: {destination}',
+            flush=True
+        )
         return True
 
     except FileExistsError:
@@ -273,7 +325,10 @@ def create_text_effect(effect):
         return False
 
     except OSError as error:
-        print(f'Could not create text file: {error}', flush=True)
+        print(
+            f'Could not create text file: {error}',
+            flush=True
+        )
         return False
 
 
@@ -313,7 +368,10 @@ def main():
                 current_state = result.get('state')
 
                 if current_state not in ('open', 'close'):
-                    print('Server returned an invalid state.', flush=True)
+                    print(
+                        'Server returned an invalid state.',
+                        flush=True
+                    )
 
                 else:
                     if (
@@ -323,12 +381,22 @@ def main():
                         print('worm has opened', flush=True)
 
                     if current_state != last_state:
-                        print(f'State: {current_state}', flush=True)
+                        print(
+                            f'State: {current_state}',
+                            flush=True
+                        )
 
                     last_state = current_state
 
-            except (OSError, ValueError, urllib.error.URLError) as error:
-                print(f'State check failed: {error}', flush=True)
+            except (
+                OSError,
+                ValueError,
+                urllib.error.URLError
+            ) as error:
+                print(
+                    f'State check failed: {error}',
+                    flush=True
+                )
 
         now = time.monotonic()
 
@@ -348,8 +416,15 @@ def main():
                     elif effect.get('type') == 'text':
                         create_text_effect(effect)
 
-            except (OSError, ValueError, urllib.error.URLError) as error:
-                print(f'Effect check failed: {error}', flush=True)
+            except (
+                OSError,
+                ValueError,
+                urllib.error.URLError
+            ) as error:
+                print(
+                    f'Effect check failed: {error}',
+                    flush=True
+                )
 
         next_check = min(
             next_state_check,
