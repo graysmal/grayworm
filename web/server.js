@@ -13,12 +13,7 @@ const OLLAMA_MODEL =
     process.env.OLLAMA_MODEL || 'llama3.2';
 
 const pagePath = path.join(__dirname, 'index.html');
-
-const mediaPath = path.join(
-    __dirname,
-    'effect-media',
-    'jtf.mkv'
-);
+const mediaDirectory = path.join(__dirname, 'effect-media');
 
 const imageFiles = {
   '/images/bg0.png': path.join(
@@ -46,12 +41,16 @@ const imageFiles = {
   )
 };
 
-let state = 'close';
+const allowedMediaTypes = {
+  '.mkv': 'video/x-matroska',
+  '.mp4': 'video/mp4',
+  '.gif': 'image/gif',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg'
+};
 
-/*
- * Incremented whenever the state changes. This allows us to detect
- * whether the switch closed and reopened while Ollama was working.
- */
+let state = 'close';
 let stateVersion = 0;
 
 function replyJson(res, status, value) {
@@ -74,17 +73,32 @@ function setState(nextState) {
   console.log(`State changed to: ${state}`);
 }
 
+function chooseSpookyTheme() {
+  const themes = [
+    'a skeleton with a day job',
+    'a ghost who is hungry',
+    'a vampire who loves spreadsheets',
+    'a haunted vending machine',
+    'a very polite zombie',
+    'a witch with computer problems',
+    'a suspicious pumpkin',
+    'a monster trying to pay rent',
+    'a ghost stuck in a printer',
+    'a dramatic haunted refrigerator'
+  ];
+
+  return themes[Math.floor(Math.random() * themes.length)];
+}
+
 /*
- * Convert the model response into a filename accepted by the daemon.
- *
- * A random suffix helps avoid collisions if Ollama generates the same
- * name twice. It isn't an absolute guarantee of uniqueness.
+ * Turn Ollama's response into a simple filename.
+ * The random suffix helps avoid collisions.
  */
-function makeSafeFilename(text) {
+function makeSafeFilename(text, extension) {
   const baseName = text
       .trim()
       .toLowerCase()
-      .replace(/\.mkv$/i, '')
+      .replace(/\.[a-z0-9]+$/i, '')
       .replace(/[^a-z0-9_-]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 40);
@@ -92,10 +106,10 @@ function makeSafeFilename(text) {
   const safeBase = baseName || 'spooky-ghost';
   const suffix = randomBytes(4).toString('hex');
 
-  return `${safeBase}-${suffix}.mkv`;
+  return `${safeBase}-${suffix}${extension}`;
 }
 
-async function generateMediaFilename() {
+async function generateFilename(extension) {
   const url = `${OLLAMA_URL.replace(/\/$/, '')}/api/generate`;
 
   const response = await fetch(url, {
@@ -109,14 +123,16 @@ async function generateMediaFilename() {
       model: OLLAMA_MODEL,
 
       prompt:
-          'Invent one short, silly, spooky filename for a video. ' +
+          'Invent one short, silly, spooky filename inspired by ' +
+          chooseSpookyTheme() + '. ' +
           'Return only the filename, without a file extension. ' +
           'Use two to four words.',
 
       stream: false,
 
       options: {
-        num_predict: 50
+        num_predict: 50,
+        temperature: 1.0
       }
     }),
 
@@ -136,7 +152,77 @@ async function generateMediaFilename() {
     throw new Error('Ollama returned an empty filename');
   }
 
-  return makeSafeFilename(data.response);
+  return makeSafeFilename(data.response, extension);
+}
+
+async function generateSillyContents() {
+  const url = `${OLLAMA_URL.replace(/\/$/, '')}/api/generate`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+
+    headers: {
+      'Content-Type': 'application/json'
+    },
+
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+
+      prompt:
+          'Write one short, funny, spooky message inspired by ' +
+          chooseSpookyTheme() + '. ' +
+          'It will be placed in a text file as a harmless prank. ' +
+          'Use one or two sentences. Return only the message.',
+
+      stream: false,
+
+      options: {
+        num_predict: 80,
+        temperature: 1.0
+      }
+    }),
+
+    signal: AbortSignal.timeout(90000)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Ollama returned HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  if (
+      typeof data.response !== 'string' ||
+      !data.response.trim()
+  ) {
+    throw new Error('Ollama returned empty text');
+  }
+
+  // Keep the result small enough for the daemon to accept it.
+  return data.response.trim().slice(0, 1000) + '\n';
+}
+
+async function chooseMediaFile() {
+  const entries = await fs.promises.readdir(mediaDirectory, {
+    withFileTypes: true
+  });
+
+  const files = entries.filter(entry => {
+    const extension = path.extname(entry.name).toLowerCase();
+
+    return (
+        entry.isFile() &&
+        Object.hasOwn(allowedMediaTypes, extension)
+    );
+  });
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  return files[
+      Math.floor(Math.random() * files.length)
+      ].name;
 }
 
 function sendFile(res, filePath, contentType, extraHeaders = {}) {
@@ -171,14 +257,15 @@ const server = http.createServer((req, res) => {
         res,
         pagePath,
         'text/html; charset=utf-8',
-        {
-          'Cache-Control': 'no-store'
-        }
+        { 'Cache-Control': 'no-store' }
     );
   }
 
-  // Serve the four page images.
-  if (req.method === 'GET' && imageFiles[req.url]) {
+  // Serve the images used by the page.
+  if (
+      req.method === 'GET' &&
+      Object.hasOwn(imageFiles, req.url)
+  ) {
     return sendFile(
         res,
         imageFiles[req.url],
@@ -186,27 +273,19 @@ const server = http.createServer((req, res) => {
     );
   }
 
-  // Return the current switch state.
+  // Return the current state.
   if (req.method === 'GET' && req.url === '/api/state') {
-    return replyJson(res, 200, {
-      state
-    });
+    return replyJson(res, 200, { state });
   }
 
-  // Toggle the switch from the webpage.
+  // Toggle the switch.
   if (req.method === 'POST' && req.url === '/api/toggle') {
     setState(state === 'open' ? 'close' : 'open');
 
-    return replyJson(res, 200, {
-      state
-    });
+    return replyJson(res, 200, { state });
   }
 
-  /*
-   * Generate a new filename for every effect request while open.
-   *
-   * The daemon saves the predefined file to its own Desktop.
-   */
+  // Generate and describe an effect.
   if (req.method === 'GET' && req.url === '/api/effect') {
     if (state !== 'open') {
       return replyJson(res, 200, {
@@ -217,65 +296,146 @@ const server = http.createServer((req, res) => {
 
     const requestStateVersion = stateVersion;
 
-    console.log('Generating a filename for an effect request...');
+    async function createEffect() {
+      // 50% chance of choosing an existing media file.
+      const chooseExistingFile = Math.random() < 0.5;
 
-    generateMediaFilename()
-        .then(filename => {
-          /*
-           * Do not return an effect if the switch changed while
-           * Ollama was generating the filename.
-           */
-          if (
-              state !== 'open' ||
-              stateVersion !== requestStateVersion
-          ) {
-            return replyJson(res, 200, {
-              state,
-              type: 'none'
-            });
-          }
+      let selectedFile = null;
 
-          console.log(`Generated media filename: ${filename}`);
+      if (chooseExistingFile) {
+        selectedFile = await chooseMediaFile();
+      }
 
-          return replyJson(res, 200, {
-            state,
-            type: 'file',
-            url: '/api/media/jtf',
-            filename,
-            destination: 'desktop'
-          });
-        })
-        .catch(error => {
-          console.error(
-              'Could not generate filename:',
-              error.message
-          );
+      /*
+       * If no supported media files exist, create a text effect.
+       * The effect-media directory itself must still exist.
+       */
+      const extension = selectedFile
+          ? path.extname(selectedFile).toLowerCase()
+          : '.txt';
 
-          return replyJson(res, 503, {
-            error: 'Could not generate a filename'
-          });
+      console.log('Generating a filename for an effect...');
+
+      const filename = await generateFilename(extension);
+
+      if (
+          state !== 'open' ||
+          stateVersion !== requestStateVersion
+      ) {
+        return replyJson(res, 200, {
+          state,
+          type: 'none'
         });
+      }
+
+      if (selectedFile) {
+        console.log(
+            `File effect: ${selectedFile} -> ${filename}`
+        );
+
+        return replyJson(res, 200, {
+          state,
+          type: 'file',
+          url: `/api/media/${encodeURIComponent(selectedFile)}`,
+          filename,
+          destination: 'desktop'
+        });
+      }
+
+      console.log('Generating text file contents...');
+
+      const contents = await generateSillyContents();
+
+      // The switch may have changed while Ollama was generating.
+      if (
+          state !== 'open' ||
+          stateVersion !== requestStateVersion
+      ) {
+        return replyJson(res, 200, {
+          state,
+          type: 'none'
+        });
+      }
+
+      console.log(`Text effect: ${filename}`);
+      console.log(`Contents: ${contents}`);
+
+      return replyJson(res, 200, {
+        state,
+        type: 'text',
+        filename,
+        contents,
+        destination: 'desktop'
+      });
+    }
+
+    createEffect().catch(error => {
+      console.error('Could not create effect:', error.message);
+
+      if (!res.headersSent) {
+        replyJson(res, 503, {
+          error: 'Could not create effect'
+        });
+      }
+    });
 
     return;
   }
 
-  // Serve the predefined media file while the switch is open.
-  if (req.method === 'GET' && req.url === '/api/media/jtf') {
+  // Serve an allowed file from effect-media.
+  if (
+      req.method === 'GET' &&
+      req.url.startsWith('/api/media/')
+  ) {
     if (state !== 'open') {
       return replyJson(res, 403, {
         error: 'The switch is closed'
       });
     }
 
-    return sendFile(
-        res,
-        mediaPath,
-        'video/x-matroska',
-        {
-          'Content-Disposition':
-              'attachment; filename="jtf.mkv"'
-        }
-    );
+    let filename;
+
+    try {
+      filename = decodeURIComponent(
+          req.url.slice('/api/media/'.length)
+      );
+    } catch {
+      return replyJson(res, 400, {
+        error: 'Invalid filename'
+      });
+    }
+
+    const extension = path.extname(filename).toLowerCase();
+
+    if (
+        !filename ||
+        filename !== path.basename(filename) ||
+        filename.includes('\\') ||
+        filename === '.' ||
+        filename === '..' ||
+        !Object.hasOwn(allowedMediaTypes, extension)
+    ) {
+      return replyJson(res, 400, {
+        error: 'Invalid media filename'
+      });
+    }
+
+    const filePath = path.join(mediaDirectory, filename);
+
+    // Reject symbolic links and non-files.
+    return fs.lstat(filePath, (error, stats) => {
+      if (error || !stats.isFile()) {
+        return replyJson(res, 404, {
+          error: 'Media file not found'
+        });
+      }
+
+      return sendFile(
+          res,
+          filePath,
+          allowedMediaTypes[extension]
+      );
+    });
   }
 
   return replyJson(res, 404, {

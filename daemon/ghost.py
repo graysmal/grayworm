@@ -5,23 +5,33 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote, unquote
 
 
 STATE_INTERVAL = 5
 EFFECT_INTERVAL = 5
-REQUEST_TIMEOUT = 15
 
-# Limit this demo to a reasonably sized media file.
+# Ollama may need time to load the model and generate a filename.
+REQUEST_TIMEOUT = 100
+
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024
+MAX_TEXT_BYTES = 4096
 
-# Only accept the media endpoint defined by this demo.
-ALLOWED_MEDIA_PATH = '/api/media/jtf'
+ALLOWED_MEDIA_EXTENSIONS = {
+    '.mkv',
+    '.mp4',
+    '.gif',
+    '.png',
+    '.jpg',
+    '.jpeg'
+}
+
+USER_AGENT = 'Grayworm/1.0'
 
 
 def get_desktop_directory():
@@ -46,71 +56,135 @@ def get_desktop_directory():
     return Path.home() / 'Desktop'
 
 
-def get_json(server, endpoint):
-
-    url = server.rstrip('/') + endpoint
-
-    request = urllib.request.Request(
+def make_request(url):
+    return urllib.request.Request(
         url,
-        headers={'User-Agent': 'Grayworm/1.0'}
+        headers={'User-Agent': USER_AGENT}
     )
 
-    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+
+def get_json(server, endpoint):
+    url = server.rstrip('/') + endpoint
+    request = make_request(url)
+
+    with urllib.request.urlopen(
+        request,
+        timeout=REQUEST_TIMEOUT
+    ) as response:
         return json.load(response)
 
 
-def safe_filename(filename):
-    """
-    Accept a simple MKV filename only. Fall back if the server returns
-    a path, unexpected extension, or other invalid value.
-    """
+def safe_filename(filename, allowed_extensions):
+    """Accept a simple filename with an allowed extension."""
     if not isinstance(filename, str):
-        return 'spooky-ghost.mkv'
+        return None
 
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,50}\.mkv', filename):
-        return 'spooky-ghost.mkv'
+    match = re.fullmatch(
+        r'[A-Za-z0-9_-]{1,50}(\.[A-Za-z0-9]{1,5})',
+        filename
+    )
+
+    if not match:
+        return None
+
+    extension = match.group(1).lower()
+
+    if extension not in allowed_extensions:
+        return None
 
     return filename
 
 
 def download_effect(server, effect):
-    if effect.get('url') != ALLOWED_MEDIA_PATH:
+    media_url = effect.get('url')
+
+    if not isinstance(media_url, str):
+        print('Missing media URL.', flush=True)
+        return False
+
+    prefix = '/api/media/'
+
+    if not media_url.startswith(prefix):
         print('Ignoring an unknown media URL.', flush=True)
         return False
 
-    filename = safe_filename(effect.get('filename'))
+    encoded_name = media_url[len(prefix):]
+    source_name = unquote(encoded_name)
+
+    # Accept one filename only, not a directory path.
+    if (
+        not source_name
+        or '/' in source_name
+        or '\\' in source_name
+        or source_name in ('.', '..')
+        or Path(source_name).suffix.lower()
+            not in ALLOWED_MEDIA_EXTENSIONS
+    ):
+        print('Ignoring an invalid media filename.', flush=True)
+        return False
+
+    filename = safe_filename(
+        effect.get('filename'),
+        ALLOWED_MEDIA_EXTENSIONS
+    )
+
+    if filename is None:
+        print('Ignoring an invalid destination filename.', flush=True)
+        return False
+
+    # Make sure the saved extension matches the source file.
+    if (
+        Path(filename).suffix.lower()
+        != Path(source_name).suffix.lower()
+    ):
+        print('Source and destination extensions differ.', flush=True)
+        return False
+
     desktop = get_desktop_directory()
 
     if not desktop.is_dir():
-        print(f'Desktop directory does not exist: {desktop}', flush=True)
+        print(
+            f'Desktop directory does not exist: {desktop}',
+            flush=True
+        )
         return False
 
     destination = desktop / filename
 
-    # Don't overwrite an existing file.
     if destination.exists():
-        print(f'File already exists; leaving it alone: {destination}', flush=True)
-        return True
+        print(
+            f'File already exists; leaving it alone: {destination}',
+            flush=True
+        )
+        return False
 
-    url = server.rstrip('/') + ALLOWED_MEDIA_PATH
+    url = (
+        server.rstrip('/')
+        + prefix
+        + quote(source_name, safe='')
+    )
+
     temporary_path = None
 
     try:
-        print(f'Downloading {url}...', flush=True)
-        request = urllib.request.Request(
-            url,
-            headers={'User-Agent': 'Grayworm/1.0'}
-        )
+        print(f'Downloading {source_name}...', flush=True)
 
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        request = make_request(url)
+
+        with urllib.request.urlopen(
+            request,
+            timeout=REQUEST_TIMEOUT
+        ) as response:
             content_length = response.headers.get('Content-Length')
 
-            if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
+            if (
+                content_length
+                and int(content_length) > MAX_DOWNLOAD_BYTES
+            ):
                 print('Media file exceeds the size limit.', flush=True)
                 return False
 
-            # Write to a temporary file first, so failed downloads don't
-            # leave a partially downloaded file on the Desktop.
+            # Download to a temporary file first.
             with tempfile.NamedTemporaryFile(
                 dir=desktop,
                 prefix='.ghost-download-',
@@ -128,16 +202,21 @@ def download_effect(server, effect):
                     bytes_downloaded += len(chunk)
 
                     if bytes_downloaded > MAX_DOWNLOAD_BYTES:
-                        raise ValueError('Media file exceeds the size limit')
+                        raise ValueError(
+                            'Media file exceeds the size limit'
+                        )
 
                     temporary_file.write(chunk)
 
-        # Avoid replacing an existing file if one appeared during download.
+        # Create the final name without replacing an existing file.
         try:
             os.link(temporary_path, destination)
         except FileExistsError:
-            print(f'File already exists; leaving it alone: {destination}', flush=True)
-            return True
+            print(
+                f'File already exists; leaving it alone: {destination}',
+                flush=True
+            )
+            return False
 
         print(f'Downloaded to: {destination}', flush=True)
         return True
@@ -151,9 +230,56 @@ def download_effect(server, effect):
             temporary_path.unlink(missing_ok=True)
 
 
+def create_text_effect(effect):
+    filename = safe_filename(
+        effect.get('filename'),
+        {'.txt'}
+    )
+
+    contents = effect.get('contents')
+
+    if filename is None or not isinstance(contents, str):
+        print('Ignoring an invalid text effect.', flush=True)
+        return False
+
+    if len(contents.encode('utf-8')) > MAX_TEXT_BYTES:
+        print('Text effect is too large.', flush=True)
+        return False
+
+    desktop = get_desktop_directory()
+
+    if not desktop.is_dir():
+        print(
+            f'Desktop directory does not exist: {desktop}',
+            flush=True
+        )
+        return False
+
+    destination = desktop / filename
+
+    try:
+        # "x" creates the file without overwriting an existing one.
+        with destination.open('x', encoding='utf-8') as file:
+            file.write(contents)
+
+        print(f'Created text file: {destination}', flush=True)
+        return True
+
+    except FileExistsError:
+        print(
+            f'File already exists; leaving it alone: {destination}',
+            flush=True
+        )
+        return False
+
+    except OSError as error:
+        print(f'Could not create text file: {error}', flush=True)
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Opt-in Ghost in the Machine client'
+        description='Ghost in the Machine client'
     )
 
     parser.add_argument(
@@ -165,9 +291,8 @@ def main():
     args = parser.parse_args()
 
     last_state = None
-    downloaded_this_open_period = False
 
-    # Query both endpoints immediately at startup.
+    # Check both endpoints immediately at startup.
     next_state_check = time.monotonic()
     next_effect_check = time.monotonic()
 
@@ -189,12 +314,13 @@ def main():
 
                 if current_state not in ('open', 'close'):
                     print('Server returned an invalid state.', flush=True)
-                else:
-                    if last_state == 'close' and current_state == 'open':
-                        print('worm has opened', flush=True)
 
-                    if current_state == 'close':
-                        downloaded_this_open_period = False
+                else:
+                    if (
+                        last_state == 'close'
+                        and current_state == 'open'
+                    ):
+                        print('worm has opened', flush=True)
 
                     if current_state != last_state:
                         print(f'State: {current_state}', flush=True)
@@ -212,25 +338,27 @@ def main():
             try:
                 effect = get_json(args.server, '/api/effect')
 
-                if effect.get('state') == 'close':
-                    downloaded_this_open_period = False
-
-                elif (
+                if (
                     effect.get('state') == 'open'
-                    and effect.get('type') == 'file'
                     and effect.get('destination') == 'desktop'
                 ):
-                    downloaded_this_open_period = download_effect(
-                        args.server,
-                        effect
-                    )
+                    if effect.get('type') == 'file':
+                        download_effect(args.server, effect)
+
+                    elif effect.get('type') == 'text':
+                        create_text_effect(effect)
 
             except (OSError, ValueError, urllib.error.URLError) as error:
                 print(f'Effect check failed: {error}', flush=True)
 
-        # Sleep until the next scheduled check.
-        next_check = min(next_state_check, next_effect_check)
-        time.sleep(max(0.1, next_check - time.monotonic()))
+        next_check = min(
+            next_state_check,
+            next_effect_check
+        )
+
+        time.sleep(
+            max(0.1, next_check - time.monotonic())
+        )
 
 
 if __name__ == '__main__':
