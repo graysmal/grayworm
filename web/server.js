@@ -1,31 +1,58 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomBytes } = require('node:crypto');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
+const OLLAMA_URL =
+    process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+
+const OLLAMA_MODEL =
+    process.env.OLLAMA_MODEL || 'llama3.2';
 
 const pagePath = path.join(__dirname, 'index.html');
-const mediaPath = path.join(__dirname, 'effect-media', 'jtf.mkv');
+
+const mediaPath = path.join(
+    __dirname,
+    'effect-media',
+    'jtf.mkv'
+);
 
 const imageFiles = {
-  '/images/bg0.png': path.join(__dirname, 'images', 'bg0.png'),
-  '/images/bg1.png': path.join(__dirname, 'images', 'bg1.png'),
-  '/images/vopen.png': path.join(__dirname, 'images', 'vopen.png'),
-  '/images/vclose.png': path.join(__dirname, 'images', 'vclose.png')
+  '/images/bg0.png': path.join(
+      __dirname,
+      'images',
+      'bg0.png'
+  ),
+
+  '/images/bg1.png': path.join(
+      __dirname,
+      'images',
+      'bg1.png'
+  ),
+
+  '/images/vopen.png': path.join(
+      __dirname,
+      'images',
+      'vopen.png'
+  ),
+
+  '/images/vclose.png': path.join(
+      __dirname,
+      'images',
+      'vclose.png'
+  )
 };
 
 let state = 'close';
-let mediaFilename = 'spooky-ghost.mkv';
 
 /*
- * Used to ignore an old Ollama response if the switch closes and
- * opens again while the previous request is still running.
+ * Incremented whenever the state changes. This allows us to detect
+ * whether the switch closed and reopened while Ollama was working.
  */
-let generationId = 0;
+let stateVersion = 0;
 
 function replyJson(res, status, value) {
   res.writeHead(status, {
@@ -36,9 +63,22 @@ function replyJson(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
+function setState(nextState) {
+  if (nextState === state) {
+    return;
+  }
+
+  state = nextState;
+  stateVersion += 1;
+
+  console.log(`State changed to: ${state}`);
+}
+
 /*
- * Convert the model's response into a short, safe filename.
- * The model only chooses the name; it cannot choose a directory.
+ * Convert the model response into a filename accepted by the daemon.
+ *
+ * A random suffix helps avoid collisions if Ollama generates the same
+ * name twice. It isn't an absolute guarantee of uniqueness.
  */
 function makeSafeFilename(text) {
   const baseName = text
@@ -47,33 +87,41 @@ function makeSafeFilename(text) {
       .replace(/\.mkv$/i, '')
       .replace(/[^a-z0-9_-]+/g, '-')
       .replace(/^-+|-+$/g, '')
-      .slice(0, 50);
+      .slice(0, 40);
 
-  return `${baseName || 'spooky-ghost'}.mkv`;
+  const safeBase = baseName || 'spooky-ghost';
+  const suffix = randomBytes(4).toString('hex');
+
+  return `${safeBase}-${suffix}.mkv`;
 }
 
 async function generateMediaFilename() {
-  const response = await fetch(
-      `${OLLAMA_URL.replace(/\/$/, '')}/api/generate`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: OLLAMA_MODEL,
-          prompt:
-              'Invent one short, silly, spooky filename for a video. ' +
-              'Return only the filename, without a file extension. ' +
-              'Use two to four words.',
-          stream: false,
-          options: {
-            num_predict: 50
-          }
-        }),
-        signal: AbortSignal.timeout(90000)
+  const url = `${OLLAMA_URL.replace(/\/$/, '')}/api/generate`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+
+    headers: {
+      'Content-Type': 'application/json'
+    },
+
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+
+      prompt:
+          'Invent one short, silly, spooky filename for a video. ' +
+          'Return only the filename, without a file extension. ' +
+          'Use two to four words.',
+
+      stream: false,
+
+      options: {
+        num_predict: 50
       }
-  );
+    }),
+
+    signal: AbortSignal.timeout(90000)
+  });
 
   if (!response.ok) {
     throw new Error(`Ollama returned HTTP ${response.status}`);
@@ -81,53 +129,22 @@ async function generateMediaFilename() {
 
   const data = await response.json();
 
-  if (typeof data.response !== 'string' || !data.response.trim()) {
+  if (
+      typeof data.response !== 'string' ||
+      !data.response.trim()
+  ) {
     throw new Error('Ollama returned an empty filename');
   }
 
   return makeSafeFilename(data.response);
 }
 
-function setState(nextState) {
-  if (nextState === state) {
-    return;
-  }
-
-  state = nextState;
-  generationId += 1;
-
-  console.log(`State changed to: ${state}`);
-
-  if (state === 'open') {
-    // Use a fallback while Ollama generates the filename.
-    mediaFilename = 'spooky-ghost.mkv';
-
-    const currentGeneration = generationId;
-
-    generateMediaFilename()
-        .then(filename => {
-          /*
-           * Only apply the result if this is still the same opening
-           * of the switch.
-           */
-          if (state === 'open' && generationId === currentGeneration) {
-            mediaFilename = filename;
-            console.log(`Generated media filename: ${mediaFilename}`);
-          }
-        })
-        .catch(error => {
-          console.error(
-              'Could not generate filename; using fallback:',
-              error.message
-          );
-        });
-  }
-}
-
 function sendFile(res, filePath, contentType, extraHeaders = {}) {
   fs.stat(filePath, (error, stats) => {
     if (error || !stats.isFile()) {
-      return replyJson(res, 404, { error: 'File not found' });
+      return replyJson(res, 404, {
+        error: 'File not found'
+      });
     }
 
     res.writeHead(200, {
@@ -148,38 +165,47 @@ function sendFile(res, filePath, contentType, extraHeaders = {}) {
 }
 
 const server = http.createServer((req, res) => {
-  // Serve the HTML page.
+  // Serve the control page.
   if (req.method === 'GET' && req.url === '/') {
     return sendFile(
         res,
         pagePath,
         'text/html; charset=utf-8',
-        { 'Cache-Control': 'no-store' }
+        {
+          'Cache-Control': 'no-store'
+        }
     );
   }
 
   // Serve the four page images.
   if (req.method === 'GET' && imageFiles[req.url]) {
-    return sendFile(res, imageFiles[req.url], 'image/png');
+    return sendFile(
+        res,
+        imageFiles[req.url],
+        'image/png'
+    );
   }
 
   // Return the current switch state.
   if (req.method === 'GET' && req.url === '/api/state') {
-    return replyJson(res, 200, { state });
+    return replyJson(res, 200, {
+      state
+    });
   }
 
   // Toggle the switch from the webpage.
   if (req.method === 'POST' && req.url === '/api/toggle') {
     setState(state === 'open' ? 'close' : 'open');
 
-    return replyJson(res, 200, { state });
+    return replyJson(res, 200, {
+      state
+    });
   }
 
   /*
-   * Tell the daemon which effect is available.
+   * Generate a new filename for every effect request while open.
    *
-   * The client decides where to save it. The server does not send
-   * an arbitrary destination path.
+   * The daemon saves the predefined file to its own Desktop.
    */
   if (req.method === 'GET' && req.url === '/api/effect') {
     if (state !== 'open') {
@@ -189,19 +215,56 @@ const server = http.createServer((req, res) => {
       });
     }
 
-    return replyJson(res, 200, {
-      state,
-      type: 'file',
-      url: '/api/media/jtf',
-      filename: mediaFilename,
-      destination: 'desktop'
-    });
+    const requestStateVersion = stateVersion;
+
+    console.log('Generating a filename for an effect request...');
+
+    generateMediaFilename()
+        .then(filename => {
+          /*
+           * Do not return an effect if the switch changed while
+           * Ollama was generating the filename.
+           */
+          if (
+              state !== 'open' ||
+              stateVersion !== requestStateVersion
+          ) {
+            return replyJson(res, 200, {
+              state,
+              type: 'none'
+            });
+          }
+
+          console.log(`Generated media filename: ${filename}`);
+
+          return replyJson(res, 200, {
+            state,
+            type: 'file',
+            url: '/api/media/jtf',
+            filename,
+            destination: 'desktop'
+          });
+        })
+        .catch(error => {
+          console.error(
+              'Could not generate filename:',
+              error.message
+          );
+
+          return replyJson(res, 503, {
+            error: 'Could not generate a filename'
+          });
+        });
+
+    return;
   }
 
-  // Serve the predefined media file.
+  // Serve the predefined media file while the switch is open.
   if (req.method === 'GET' && req.url === '/api/media/jtf') {
     if (state !== 'open') {
-      return replyJson(res, 403, { error: 'The switch is closed' });
+      return replyJson(res, 403, {
+        error: 'The switch is closed'
+      });
     }
 
     return sendFile(
@@ -209,12 +272,15 @@ const server = http.createServer((req, res) => {
         mediaPath,
         'video/x-matroska',
         {
-          'Content-Disposition': 'attachment; filename="jtf.mkv"'
+          'Content-Disposition':
+              'attachment; filename="jtf.mkv"'
         }
     );
   }
 
-  return replyJson(res, 404, { error: 'Not found' });
+  return replyJson(res, 404, {
+    error: 'Not found'
+  });
 });
 
 server.listen(PORT, HOST, () => {

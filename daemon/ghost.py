@@ -13,8 +13,8 @@ import urllib.error
 import urllib.request
 
 
-STATE_INTERVAL = 15
-EFFECT_INTERVAL = 20
+STATE_INTERVAL = 5
+EFFECT_INTERVAL = 5
 REQUEST_TIMEOUT = 15
 
 # Limit this demo to a reasonably sized media file.
@@ -219,7 +219,6 @@ def main():
                     effect.get('state') == 'open'
                     and effect.get('type') == 'file'
                     and effect.get('destination') == 'desktop'
-                    and not downloaded_this_open_period
                 ):
                     downloaded_this_open_period = download_effect(
                         args.server,
