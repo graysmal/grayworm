@@ -438,6 +438,28 @@ const server = http.createServer((req, res) => {
     });
   }
 
+  // Serve the page's sound effects.
+  const soundFiles = {
+    '/media/open.mp3': 'open.mp3',
+    '/media/close.mp3': 'close.mp3',
+    '/media/laugh.mp3': 'laugh.mp3',
+    '/media/riddle.mp3': 'riddle.mp3',
+    '/media/response.mp3': 'response.mp3'
+  };
+
+  if (
+      req.method === 'GET' &&
+      Object.hasOwn(soundFiles, req.url)
+  ) {
+    const soundPath = path.join(
+        __dirname,
+        'media',
+        soundFiles[req.url]
+    );
+
+    return sendFile(res, soundPath, 'audio/mpeg');
+  }
+
   return replyJson(res, 404, {
     error: 'Not found'
   });

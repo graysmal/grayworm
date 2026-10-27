@@ -7,7 +7,6 @@
   <title>grayworm how do you like my grayworm</title>
 
   <style>
-    /* Make the whole browser window black. */
     html,
     body {
       width: 100%;
@@ -16,7 +15,6 @@
       background: black;
     }
 
-    /* Center the 16:9 scene in the browser window. */
     body {
       display: flex;
       align-items: center;
@@ -26,11 +24,6 @@
 
     .scene {
       position: relative;
-
-      /*
-       * Fit the 16:9 scene within the window without stretching.
-       * Any extra space around it remains black.
-       */
       width: min(100vw, 177.7778vh);
       aspect-ratio: 16 / 9;
     }
@@ -50,10 +43,6 @@
       z-index: 1;
     }
 
-    /*
-     * Adjust these values after cropping your valve images.
-     * The percentages are relative to the 2560×1440 scene.
-     */
     #valve {
       position: absolute;
       z-index: 2;
@@ -62,11 +51,6 @@
       top: 50%;
       width: 38%;
 
-      /*
-       * Center the valve image on the left/top position.
-       * Remove this line if you want left/top to specify
-       * the top-left corner instead.
-       */
       transform: translate(-50%, -50%);
 
       height: auto;
@@ -108,13 +92,62 @@
 <script>
   const valve = document.querySelector('#valve');
 
-  // Keep these paths consistent with your actual filenames.
   const valveImages = {
     open: '/images/vopen.png',
     close: '/images/vclose.png'
   };
 
+  /*
+   * Preload the sounds. Riddle is included so it can be used later,
+   * but neither transition currently plays it.
+   */
+  const sounds = {
+    open: new Audio('/media/open.mp3'),
+    close: new Audio('/media/close.mp3'),
+    laugh: new Audio('/media/laugh.mp3'),
+    riddle: new Audio('/media/riddle.mp3'),
+    response: new Audio('/media/response.mp3')
+  };
+
+  for (const sound of Object.values(sounds)) {
+    sound.preload = 'auto';
+  }
+
+  let currentState = null;
   let toggling = false;
+
+  /*
+   * Used to ignore an older polling response if a newer request
+   * has already been started.
+   */
+  let requestNumber = 0;
+
+  function stopAllAudio() {
+    for (const sound of Object.values(sounds)) {
+      sound.pause();
+
+      try {
+        sound.currentTime = 0;
+      } catch (error) {
+        console.error('Could not reset audio:', error);
+      }
+    }
+  }
+
+  function playSoundsForState(state) {
+    stopAllAudio();
+
+    const soundsToPlay = state === 'open'
+            ? [sounds.open, sounds.laugh]
+            : [sounds.close, sounds.response];
+
+    // Start both sounds without waiting for the other to finish.
+    for (const sound of soundsToPlay) {
+      sound.play().catch(error => {
+        console.error('Could not play audio:', error);
+      });
+    }
+  }
 
   function displayState(state) {
     if (!valveImages[state]) {
@@ -122,11 +155,27 @@
       return;
     }
 
+    const previousState = currentState;
+    currentState = state;
+
     valve.src = valveImages[state];
     valve.alt = `my worm is ${state}. click to toggle.`;
+
+    /*
+     * The first response establishes the initial state.
+     * Play audio only when an established state changes.
+     */
+    if (
+            previousState !== null &&
+            previousState !== state
+    ) {
+      playSoundsForState(state);
+    }
   }
 
   async function refreshState() {
+    const thisRequest = ++requestNumber;
+
     const response = await fetch('/api/state', {
       cache: 'no-store'
     });
@@ -136,6 +185,12 @@
     }
 
     const data = await response.json();
+
+    // Ignore stale responses from an earlier request.
+    if (thisRequest !== requestNumber) {
+      return;
+    }
+
     displayState(data.state);
   }
 
@@ -143,6 +198,9 @@
     if (toggling) return;
 
     toggling = true;
+
+    // Invalidate any state poll that was already in progress.
+    const thisRequest = ++requestNumber;
 
     try {
       const response = await fetch('/api/toggle', {
@@ -154,7 +212,10 @@
       }
 
       const data = await response.json();
-      displayState(data.state);
+
+      if (thisRequest === requestNumber) {
+        displayState(data.state);
+      }
     } catch (error) {
       console.error(error);
     } finally {
@@ -164,7 +225,6 @@
 
   valve.addEventListener('click', toggleState);
 
-  // Allow keyboard users to activate the image too.
   valve.addEventListener('keydown', event => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
