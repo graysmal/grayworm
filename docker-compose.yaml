@@ -9,6 +9,8 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
     ports:
       - "3000:3000"
+    volumes:
+      - ./web/effect-media:/app/web/effect-media:ro
     depends_on:
       - ollama
 
