@@ -1,4 +1,4 @@
-# Grayworm 👻
+# Grayworm
 
 A spooky hackathon project for the **Ghost in the Machine** theme. Grayworm pairs a vault-themed control page with a Linux client: open the vault and participating desktops start receiving strange files, AI-written messages, and the occasional video.
 
