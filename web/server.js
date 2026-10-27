@@ -27,6 +27,7 @@ const imageFiles = {
       'images',
       'bg1.png'
   ),
+  '/images/bg2.png': path.join(__dirname, 'images', 'bg2.png'),
 
   '/images/vopen.png': path.join(
       __dirname,

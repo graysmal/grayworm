@@ -37,15 +37,30 @@
 
     #bg0 {
       z-index: 0;
+      animation: rotate-background 30s linear infinite;
+    }
+
+    @keyframes rotate-background {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     #bg1 {
       z-index: 1;
     }
 
+    #bg2 {
+      z-index: 2;
+    }
+
     #valve {
       position: absolute;
-      z-index: 2;
+      z-index: 3;
 
       left: 50%;
       top: 50%;
@@ -60,6 +75,70 @@
     #valve:focus-visible {
       outline: 2px solid white;
       outline-offset: 4px;
+    }
+
+    /* Black-and-white multiplication dialog. */
+    dialog {
+      width: min(320px, calc(100vw - 48px));
+      padding: 24px;
+
+      color: white;
+      background: black;
+      border: 1px solid white;
+
+      font-family: sans-serif;
+    }
+
+    dialog::backdrop {
+      background: rgba(0, 0, 0, 0.8);
+    }
+
+    dialog h2 {
+      margin-top: 0;
+      font-size: 1.2rem;
+    }
+
+    dialog p {
+      line-height: 1.4;
+    }
+
+    .problem {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 12px 0;
+    }
+
+    .problem input {
+      width: 90px;
+      padding: 6px;
+
+      color: white;
+      background: black;
+      border: 1px solid white;
+
+      font: inherit;
+    }
+
+    dialog button {
+      padding: 8px 16px;
+
+      color: black;
+      background: white;
+      border: 1px solid white;
+
+      font: inherit;
+      cursor: pointer;
+    }
+
+    dialog button:disabled {
+      opacity: 0.5;
+      cursor: wait;
+    }
+
+    #quiz-message {
+      min-height: 1.4em;
     }
   </style>
 </head>
@@ -81,6 +160,13 @@
   >
 
   <img
+          id="bg2"
+          class="background"
+          src="/images/bg2.png"
+          alt=""
+  >
+
+  <img
           id="valve"
           src="/images/vclose.png"
           alt="Toggle the ghost machine"
@@ -89,18 +175,64 @@
   >
 </main>
 
+<dialog id="quiz-dialog" aria-labelledby="quiz-title">
+  <form id="quiz-form">
+    <h2 id="quiz-title">Too late.</h2>
+
+    <p>
+      Solve all three problems to close the valve.
+    </p>
+
+    <div class="problem">
+      <label for="answer-0" id="question-0"></label>
+      <input
+              id="answer-0"
+              type="number"
+              inputmode="numeric"
+              required
+      >
+    </div>
+
+    <div class="problem">
+      <label for="answer-1" id="question-1"></label>
+      <input
+              id="answer-1"
+              type="number"
+              inputmode="numeric"
+              required
+      >
+    </div>
+
+    <div class="problem">
+      <label for="answer-2" id="question-2"></label>
+      <input
+              id="answer-2"
+              type="number"
+              inputmode="numeric"
+              required
+      >
+    </div>
+
+    <p id="quiz-message" aria-live="polite"></p>
+
+    <button id="quiz-submit" type="submit">
+      Submit
+    </button>
+  </form>
+</dialog>
+
 <script>
   const valve = document.querySelector('#valve');
+  const quizDialog = document.querySelector('#quiz-dialog');
+  const quizForm = document.querySelector('#quiz-form');
+  const quizMessage = document.querySelector('#quiz-message');
+  const quizSubmit = document.querySelector('#quiz-submit');
 
   const valveImages = {
     open: '/images/vopen.png',
     close: '/images/vclose.png'
   };
 
-  /*
-   * Preload the sounds. Riddle is included so it can be used later,
-   * but neither transition currently plays it.
-   */
   const sounds = {
     open: new Audio('/media/open.mp3'),
     close: new Audio('/media/close.mp3'),
@@ -115,12 +247,15 @@
 
   let currentState = null;
   let toggling = false;
+  let requestNumber = 0;
 
   /*
-   * Used to ignore an older polling response if a newer request
-   * has already been started.
+   * True while waiting for the user to click again before
+   * the riddle finishes.
    */
-  let requestNumber = 0;
+  let waitingForRiddle = false;
+
+  let problems = [];
 
   function stopAllAudio() {
     for (const sound of Object.values(sounds)) {
@@ -134,14 +269,27 @@
     }
   }
 
-  function playSoundsForState(state) {
+  function playSoundsForState(state, options = {}) {
     stopAllAudio();
 
-    const soundsToPlay = state === 'open'
-            ? [sounds.open, sounds.laugh]
-            : [sounds.close, sounds.response];
+    let soundsToPlay;
 
-    // Start both sounds without waiting for the other to finish.
+    if (state === 'open') {
+      soundsToPlay = [
+        sounds.open,
+        sounds.laugh
+      ];
+    } else if (options.skipResponse) {
+      soundsToPlay = [
+        sounds.close
+      ];
+    } else {
+      soundsToPlay = [
+        sounds.close,
+        sounds.response
+      ];
+    }
+
     for (const sound of soundsToPlay) {
       sound.play().catch(error => {
         console.error('Could not play audio:', error);
@@ -149,7 +297,7 @@
     }
   }
 
-  function displayState(state) {
+  function displayState(state, options = {}) {
     if (!valveImages[state]) {
       console.error('Unknown state:', state);
       return;
@@ -162,14 +310,26 @@
     valve.alt = `my worm is ${state}. click to toggle.`;
 
     /*
-     * The first response establishes the initial state.
-     * Play audio only when an established state changes.
+     * If another browser closed the valve, dismiss this browser's
+     * riddle or quiz as well.
+     */
+    if (state === 'close') {
+      waitingForRiddle = false;
+
+      if (quizDialog.open) {
+        quizDialog.close();
+      }
+    }
+
+    /*
+     * The first response establishes the state without playing
+     * a sound. Later state changes play the appropriate sounds.
      */
     if (
             previousState !== null &&
             previousState !== state
     ) {
-      playSoundsForState(state);
+      playSoundsForState(state, options);
     }
   }
 
@@ -186,7 +346,7 @@
 
     const data = await response.json();
 
-    // Ignore stale responses from an earlier request.
+    // Ignore an older response if a newer request was started.
     if (thisRequest !== requestNumber) {
       return;
     }
@@ -194,12 +354,12 @@
     displayState(data.state);
   }
 
-  async function toggleState() {
+  async function requestToggle(options = {}) {
     if (toggling) return;
 
     toggling = true;
 
-    // Invalidate any state poll that was already in progress.
+    // Invalidate an older poll that may still be in progress.
     const thisRequest = ++requestNumber;
 
     try {
@@ -214,14 +374,163 @@
       const data = await response.json();
 
       if (thisRequest === requestNumber) {
-        displayState(data.state);
+        displayState(data.state, options);
       }
-    } catch (error) {
-      console.error(error);
+
+      return data.state;
     } finally {
       toggling = false;
     }
   }
+
+  function randomNumber(min, max) {
+    return Math.floor(
+            Math.random() * (max - min + 1)
+    ) + min;
+  }
+
+  function showMultiplicationQuiz() {
+    if (quizDialog.open || currentState !== 'open') {
+      return;
+    }
+
+    problems = [];
+
+    for (let i = 0; i < 3; i++) {
+      const first = randomNumber(2, 12);
+      const second = randomNumber(2, 12);
+
+      problems.push({
+        first,
+        second,
+        answer: first * second
+      });
+
+      const question = document.querySelector(
+              `#question-${i}`
+      );
+
+      const input = document.querySelector(
+              `#answer-${i}`
+      );
+
+      question.textContent = `${first} × ${second} =`;
+      input.value = '';
+    }
+
+    quizMessage.textContent = '';
+    quizSubmit.disabled = false;
+
+    quizDialog.showModal();
+
+    document.querySelector('#answer-0').focus();
+  }
+
+  async function toggleState() {
+    if (toggling || quizDialog.open) {
+      return;
+    }
+
+    if (currentState === null) {
+      console.error('The current state is not known yet.');
+      return;
+    }
+
+    if (currentState === 'open') {
+      const riddleIsPlaying =
+              !sounds.riddle.paused &&
+              !sounds.riddle.ended;
+
+      if (!riddleIsPlaying) {
+        stopAllAudio();
+
+        try {
+          sounds.riddle.currentTime = 0;
+          waitingForRiddle = true;
+
+          await sounds.riddle.play();
+        } catch (error) {
+          waitingForRiddle = false;
+          console.error('Could not play the riddle:', error);
+        }
+
+        // The first click does not change the server state.
+        return;
+      }
+
+      // The second click happened while the riddle was playing.
+      waitingForRiddle = false;
+    }
+
+    try {
+      await requestToggle();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  sounds.riddle.addEventListener('ended', () => {
+    if (waitingForRiddle && currentState === 'open') {
+      waitingForRiddle = false;
+      showMultiplicationQuiz();
+    }
+  });
+
+  // Don't let Escape dismiss the quiz while the valve is open.
+  quizDialog.addEventListener('cancel', event => {
+    event.preventDefault();
+  });
+
+  quizForm.addEventListener('submit', async event => {
+    event.preventDefault();
+
+    const allCorrect = problems.every((problem, index) => {
+      const input = document.querySelector(
+              `#answer-${index}`
+      );
+
+      return (
+              input.value.trim() !== '' &&
+              Number(input.value) === problem.answer
+      );
+    });
+
+    if (!allCorrect) {
+      quizMessage.textContent =
+              'Not quite. Check your answers and try again.';
+      return;
+    }
+
+    quizSubmit.disabled = true;
+    quizMessage.textContent = 'Closing...';
+
+    try {
+      if (currentState !== 'open') {
+        quizDialog.close();
+        return;
+      }
+
+      const newState = await requestToggle({
+        skipResponse: true
+      });
+
+      if (newState === 'close') {
+        if (quizDialog.open) {
+          quizDialog.close();
+        }
+      } else {
+        quizMessage.textContent =
+                'The valve did not close. Please try again.';
+      }
+    } catch (error) {
+      console.error(error);
+
+      quizMessage.textContent =
+              'Could not reach the server. Please try again.';
+    } finally {
+      quizSubmit.disabled = false;
+    }
+  });
 
   valve.addEventListener('click', toggleState);
 
