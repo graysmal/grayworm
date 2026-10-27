@@ -26,6 +26,9 @@
       position: relative;
       width: min(100vw, 177.7778vh);
       aspect-ratio: 16 / 9;
+
+      /* Clip rotating images to the edges of the scene. */
+      overflow: hidden;
     }
 
     .background {
@@ -58,9 +61,13 @@
       z-index: 2;
     }
 
+    #bg3 {
+      z-index: 3;
+    }
+
     #valve {
       position: absolute;
-      z-index: 3;
+      z-index: 4;
 
       left: 50%;
       top: 50%;
@@ -77,7 +84,6 @@
       outline-offset: 4px;
     }
 
-    /* Black-and-white multiplication dialog. */
     dialog {
       width: min(320px, calc(100vw - 48px));
       padding: 24px;
@@ -164,6 +170,16 @@
           class="background"
           src="/images/bg2.png"
           alt=""
+          hidden
+  >
+
+  <!-- Hidden until the server reports that the vault is open. -->
+  <img
+          id="bg3"
+          class="background"
+          src="/images/bg3.png"
+          alt=""
+          hidden
   >
 
   <img
@@ -223,6 +239,7 @@
 
 <script>
   const valve = document.querySelector('#valve');
+
   const quizDialog = document.querySelector('#quiz-dialog');
   const quizForm = document.querySelector('#quiz-form');
   const quizMessage = document.querySelector('#quiz-message');
@@ -249,12 +266,7 @@
   let toggling = false;
   let requestNumber = 0;
 
-  /*
-   * True while waiting for the user to click again before
-   * the riddle finishes.
-   */
   let waitingForRiddle = false;
-
   let problems = [];
 
   function stopAllAudio() {
@@ -309,10 +321,9 @@
     valve.src = valveImages[state];
     valve.alt = `my worm is ${state}. click to toggle.`;
 
-    /*
-     * If another browser closed the valve, dismiss this browser's
-     * riddle or quiz as well.
-     */
+    // Only show bg3 while the vault is open.
+    document.querySelector('#bg2').hidden = state !== 'open';
+
     if (state === 'close') {
       waitingForRiddle = false;
 
@@ -321,10 +332,7 @@
       }
     }
 
-    /*
-     * The first response establishes the state without playing
-     * a sound. Later state changes play the appropriate sounds.
-     */
+    // Don't play a sound when establishing the initial state.
     if (
             previousState !== null &&
             previousState !== state
@@ -346,7 +354,6 @@
 
     const data = await response.json();
 
-    // Ignore an older response if a newer request was started.
     if (thisRequest !== requestNumber) {
       return;
     }
@@ -358,8 +365,6 @@
     if (toggling) return;
 
     toggling = true;
-
-    // Invalidate an older poll that may still be in progress.
     const thisRequest = ++requestNumber;
 
     try {
@@ -454,11 +459,9 @@
           console.error('Could not play the riddle:', error);
         }
 
-        // The first click does not change the server state.
         return;
       }
 
-      // The second click happened while the riddle was playing.
       waitingForRiddle = false;
     }
 
@@ -476,7 +479,6 @@
     }
   });
 
-  // Don't let Escape dismiss the quiz while the valve is open.
   quizDialog.addEventListener('cancel', event => {
     event.preventDefault();
   });
@@ -543,7 +545,6 @@
 
   refreshState().catch(console.error);
 
-  // Pick up changes made from another browser.
   setInterval(() => {
     if (!toggling) {
       refreshState().catch(console.error);
