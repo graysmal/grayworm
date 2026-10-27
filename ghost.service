@@ -1,0 +1,14 @@
+[Unit]
+Description=ghost
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/user/Documents/git/grayworm/daemon/ghost.py --server https://worm.graysmal.com
+Restart=on-failure
+RestartSec=5
+# Optional: log to journal
+WorkingDirectory=/home/user/Documents/git/grayworm/
+
+[Install]
+WantedBy=default.target
